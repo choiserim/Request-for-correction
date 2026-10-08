@@ -64,44 +64,18 @@ npm test           # 세액 계산 엔진 단위 테스트
 ## 소제목           → 소제목
 ```
 
-## 3. API 키 보안과 팀 사용
+## 3. API 키 보안
 
-설정 ⚙에서 연결 방식을 고릅니다.
-
-| 방식 | 언제 | API 키 위치 |
-|---|---|---|
-| **개인 API 키** | 혼자, 개인 PC에서 | 내 브라우저 → Anthropic 직접 호출 (`anthropic-dangerous-direct-browser-access`) |
-| **팀 프록시** | 여러 사람이 함께 | Cloudflare Worker에만 보관, 팀원은 **팀 접속 코드**로 사용 |
-
-키·코드는 기본적으로 현재 탭(세션)에만 보관되고, "이 브라우저에 키·코드 기억"을 체크했을 때만 localStorage에 남습니다.
-
-### 팀 프록시 배포 (관리자, Cloudflare 대시보드 · 약 10분)
-1. cloudflare.com 무료 가입 → **Workers & Pages → Create → Create Worker** → 이름(예: `gj-proxy`) → Deploy
-2. **Edit code** → 기본 코드를 지우고 `worker/proxy.js` 전체를 붙여넣기 → Deploy
-3. **Settings → Variables and Secrets** 에 추가
-
-   | 이름 | 종류 | 값 예시 |
-   |---|---|---|
-   | `ANTHROPIC_API_KEY` | Secret | `sk-ant-...` (이 용도 전용 키 권장) |
-   | `TEAM_CODES` | Secret | `최세림:plana-7Kx92q,홍길동:plana-Qm31Za` |
-   | `ALLOWED_ORIGIN` | Text | `https://<아이디>.github.io` (경로 없이 도메인까지) |
-
-   - 접속 코드는 팀원별로 다르게, 추측하기 어려운 12자 이상으로 만드세요.
-   - 퇴사·분실 시 해당 `이름:코드`만 지우고 저장하면 그 사람만 즉시 차단됩니다.
-   - 누가 언제 사용했는지는 Worker의 **Logs**에서 이름으로 확인할 수 있습니다(검토 내용은 기록하지 않음).
-4. 웹앱 설정 → **팀 프록시** 선택 → Worker 주소 입력 → 본인 코드 입력 → **연결 확인** → 저장
-5. **팀원 초대 링크 복사** 버튼으로 링크를 보내고, 접속 코드는 팀원별로 **따로**(문자·메신저 등) 전달합니다.
-   링크를 연 팀원은 프록시 주소가 자동 입력되고, 코드만 넣으면 됩니다.
-
-명령어로 배포하려면:
-```bash
-cd worker
-npx wrangler secret put ANTHROPIC_API_KEY
-npx wrangler secret put TEAM_CODES
-npx wrangler deploy        # wrangler.toml 의 ALLOWED_ORIGIN 수정 후
-```
-
-> `ALLOWED_ORIGIN`은 다른 웹사이트에서의 호출을 막고, `TEAM_CODES`는 내 웹앱을 아는 외부인의 사용을 막습니다. 두 가지를 모두 설정하고, Anthropic Console에서 월 사용 한도(Spend limit)도 걸어 두세요.
+- 기본 방식은 **브라우저 → Anthropic API 직접 호출**입니다(`anthropic-dangerous-direct-browser-access` 헤더). 키는 이 브라우저의 세션에만 보관되며, "이 브라우저에 키 저장"을 체크했을 때만 localStorage에 남습니다. 개인 PC에서만 사용하세요.
+- 팀이 함께 쓰거나 키를 노출하고 싶지 않다면 `worker/` 의 **Cloudflare Worker 프록시**를 배포하세요.
+  ```bash
+  cd worker
+  npx wrangler secret put ANTHROPIC_API_KEY      # 키는 Worker에만 저장
+  # wrangler.toml 의 ALLOWED_ORIGIN 을 https://<아이디>.github.io 로 수정
+  npx wrangler deploy
+  ```
+  배포된 주소(`https://....workers.dev`)를 설정의 **프록시 URL**에 넣으면 API 키 없이 동작합니다.
+  프록시는 공개 주소이므로 ALLOWED_ORIGIN 제한과 Anthropic Console의 사용 한도(Spend limit)를 꼭 설정하세요.
 
 ## 4. 폴더 구조
 

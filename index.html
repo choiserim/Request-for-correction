@@ -137,31 +137,16 @@
   <dialog id="dlgSettings">
     <form method="dialog" class="settings">
       <h2>설정</h2>
-      <div class="seg" role="radiogroup" aria-label="연결 방식">
-        <label><input type="radio" name="conn" value="key" /> 개인 API 키</label>
-        <label><input type="radio" name="conn" value="proxy" /> 팀 프록시</label>
-      </div>
-      <div id="connKey">
-        <label>Anthropic API 키
-          <input id="setKey" type="password" autocomplete="off" placeholder="sk-ant-..." /></label>
-        <p class="muted small">키는 이 브라우저에서 Anthropic API로만 직접 전송됩니다. 개인 PC에서만 사용하세요.</p>
-      </div>
-      <div id="connProxy">
-        <label>프록시 URL
-          <input id="setProxy" type="url" placeholder="https://gj-proxy.계정.workers.dev" /></label>
-        <label>팀 접속 코드
-          <input id="setTeamCode" type="password" autocomplete="off" placeholder="관리자에게 받은 코드" /></label>
-        <div class="btns">
-          <button id="setCheck" type="button" class="ghost small">연결 확인</button>
-          <button id="setInvite" type="button" class="ghost small" title="프록시 주소가 담긴 링크를 복사합니다">팀원 초대 링크 복사</button>
-        </div>
-        <p id="setStatus" class="small muted" aria-live="polite"></p>
-      </div>
-      <label class="small"><input id="setRemember" type="checkbox" /> 이 브라우저에 키·코드 기억 (개인 PC에서만)</label>
+      <label>Anthropic API 키
+        <input id="setKey" type="password" autocomplete="off" placeholder="sk-ant-..." /></label>
+      <label class="small"><input id="setRemember" type="checkbox" /> 이 브라우저에 키 저장 (개인 PC에서만 권장)</label>
       <label>모델
         <select id="setModel"></select></label>
       <label>최대 출력 토큰
         <input id="setMaxTok" type="number" min="1000" max="64000" step="1000" value="8000" /></label>
+      <label>프록시 URL (선택)
+        <input id="setProxy" type="url" placeholder="https://your-worker.workers.dev — 입력 시 API 키 없이 프록시로 호출" /></label>
+      <p class="muted small">API 키는 이 브라우저에서 Anthropic API로만 직접 전송됩니다. 여러 사람이 쓰는 경우 worker/proxy.js(키 보관용 프록시)를 배포해 주소를 넣으세요.</p>
       <div class="btns end"><button value="cancel" class="ghost">닫기</button><button id="setSave" value="ok" class="primary">저장</button></div>
     </form>
   </dialog>
