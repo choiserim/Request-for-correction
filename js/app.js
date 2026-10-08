@@ -185,6 +185,10 @@ function renderSections() {
 function syncInputs() {
   const i = state.inputs;
   $("#inCeoAge").value = i.ceoAge ?? ""; $("#inYouth").value = i.youth; $("#inRelated").value = i.related;
+  // 엑셀(인적사항·종합의견)에서 읽은 창업 당시 대표자 나이를 안내 — 직접 입력하면 그 값이 우선
+  const ag = state.analysis?.ageInfo, fd = state.analysis?.founder;
+  $("#inCeoAge").placeholder = ag && ag.source !== "입력값" ? `자동 ${ag.exact ? ag.min : `${ag.min}~${ag.max}`}세 (${fd})` : "생년월일 미확인 — 입력";
+  $("#inCeoAge").title = ag && ag.source !== "입력값" ? `${fd} · ${ag.source} 기준` : "";
   $("#inOver").value = i.overcrowded; $("#inSize").value = i.size; $("#inAuthor").value = state.meta.author || "";
   const yrs = state.data.fin.years;
   if ($("#yearInputs").dataset.years !== yrs.join(",")) {

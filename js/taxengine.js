@@ -71,6 +71,67 @@ function smeSpecialRate(size, capital, isMfg) {
 const ymd = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 const r1 = (v) => Math.round(v * 10) / 10;
 
+const pctTxt = (v) => (v == null ? "-" : `${Math.round(v * 100) / 100}%`);
+
+/** 창업 당시 대표자의 만 나이: 생년월일(정확) → 출생연도(범위) */
+export function ageAtFounding(person, founded) {
+  const f = /^(\d{4})-(\d{2})-(\d{2})/.exec(founded || "");
+  if (!person || !f) return null;
+  const fy = Number(f[1]), fm = Number(f[2]), fd = Number(f[3]);
+  const b = /^(\d{4})-(\d{2})-(\d{2})/.exec(person.birthDate || "");
+  if (b) {
+    let age = fy - Number(b[1]);
+    if (fm < Number(b[2]) || (fm === Number(b[2]) && fd < Number(b[3]))) age -= 1;
+    return { min: age, max: age, exact: true, source: "인적사항 생년월일" };
+  }
+  if (person.birthYear) return { min: fy - person.birthYear - 1, max: fy - person.birthYear, exact: false, source: "종합의견 출생연도" };
+  return null;
+}
+
+/** 청년창업(100%) 요건: 창업 당시 대표자 · 연령 · 최대주주 여부 */
+export function founderYouth(data, opt = {}, foundedYear) {
+  const c = data.company;
+  const founder = c.founderName || c.ceo || "";
+  const sh = (data.shareholders || []).filter((x) => x.pct != null);
+  const maxPct = sh.length ? Math.max(...sh.map((x) => x.pct)) : null;
+  const largest = sh.find((x) => x.pct === maxPct) || null;
+  const founderShare = sh.find((x) => x.name === founder) || null;
+  // 동률 최대주주도 '최대주주'로 인정. 주주정보가 없으면 판단 보류(null)
+  const ceoIsLargest = !sh.length ? null : founderShare ? founderShare.pct >= maxPct - 0.005 : false;
+
+  let ageInfo = null;
+  if (opt.ceoAge) ageInfo = { min: opt.ceoAge, max: opt.ceoAge, exact: true, source: "입력값" };
+  else ageInfo = ageAtFounding((data.people || []).find((p) => p.name === founder), c.founded);
+
+  // 15~34세 충족, 35~40세는 병역기간(최대 6년) 차감 시 가능 → 확인 필요, 41세 이상 미충족
+  let byAge = null, military = false;
+  if (ageInfo) {
+    if (ageInfo.max <= 34 && ageInfo.min >= 15) byAge = true;
+    else if (ageInfo.min >= 41) byAge = false;
+    else if (ageInfo.min >= 35 || ageInfo.max >= 35) military = true;
+  }
+  const youth = opt.youth === "yes" ? true : opt.youth === "no" ? false : byAge;
+
+  const ageTxt = !ageInfo ? "연령 미확인 (생년월일 입력 필요)"
+    : ageInfo.exact ? `창업 당시 만 ${ageInfo.min}세 (${ageInfo.source})`
+    : `창업 당시 만 ${ageInfo.min}~${ageInfo.max}세 (${ageInfo.source})`;
+  const who = `창업 당시 대표 ${founder || "미확인"}${c.ceo && founder && c.ceo !== founder ? ` (현 대표 ${c.ceo})` : ""}`;
+  const shareTxt = !sh.length ? "주주정보 없음"
+    : ceoIsLargest ? `지분 ${pctTxt(founderShare.pct)} 최대주주`
+    : `지분 ${founderShare ? pctTxt(founderShare.pct) : "없음"} — 최대주주 ${largest.name} ${pctTxt(largest.pct)}`;
+  const fact = `${who} · ${shareTxt} · ${ageTxt}`;
+
+  let status;
+  if (opt.youth === "yes") status = ceoIsLargest === false ? "미충족 (대표자≠최대주주)" : "충족 (입력)";
+  else if (opt.youth === "no") status = "미충족 (입력)";
+  else if (ceoIsLargest === false) status = "미충족 (대표자≠최대주주)";
+  else if (byAge === false) status = `미충족 (창업 당시 ${ageInfo.min}세)`;
+  else if (military) status = "확인 필요 (병역기간 차감 시 가능)";
+  else if (byAge === true) status = ceoIsLargest === null ? "확인 필요 (주주명부)" : "충족";
+  else status = "확인 필요";
+  return { founder, founderShare, largest, ceoIsLargest, ageInfo, youth, military, fact, status };
+}
+
 /**
  * @param {object} data parseKodata 결과
  * @param {object} opt 사용자 보완 입력
@@ -91,10 +152,11 @@ export function analyze(data, opt = {}) {
   const size = opt.size && opt.size !== "auto" ? opt.size : (/중기업/.test(company.size) ? "중기업" : /대기업|중견/.test(company.size) ? company.size : "소기업");
   const isSME = !/대기업|중견/.test(size);
   const isMfg = /^C/.test(company.industryCode || "");
-  const youthByAge = opt.ceoAge ? opt.ceoAge >= 15 && opt.ceoAge <= 34 : null;
-  const youth = opt.youth === "yes" ? true : opt.youth === "no" ? false : youthByAge; // null = 미확인
-  const largest = data.shareholders.slice().sort((a, b) => (b.pct || 0) - (a.pct || 0))[0];
-  const ceoIsLargest = largest ? largest.name === company.ceo : null;
+  // ---- 청년창업 판단: '창업 당시 대표자' 기준 (조특령 §5) ----
+  const fz = founderYouth(data, opt, foundedYear);
+  const { founder, founderShare, largest, ceoIsLargest, ageInfo } = fz;
+  const youth = fz.youth;                                   // true / false / null(미확인)
+  const youthEligible = youth === true && ceoIsLargest !== false; // 대표자이면서 최대주주여야 함
   const sameIndustryRelated = related.filter((r) => company.industryName && r.business && (r.business.includes(company.industryName) || company.industryName.includes(r.business)));
   const relatedStatus = opt.related || "unknown";
 
@@ -147,21 +209,19 @@ export function analyze(data, opt = {}) {
     { item: "창업 해당성", rule: "승계·법인전환·재개업·사업확장 제외 (§6⑩)",
       fact: sameIndustryRelated.length ? `동일 업종 관계회사: ${sameIndustryRelated.map((r) => r.name).join(", ")}` : (related.length ? `관계회사: ${related.map((r) => r.name).join(", ")}` : "관계회사 정보 없음"),
       status: relatedStatus === "independent" ? "충족(소명자료 확보)" : relatedStatus === "succession" ? "미충족 가능성" : (sameIndustryRelated.length ? "확인 필요" : "충족 추정") },
-    { item: "청년 (100%)", rule: "창업 당시 15~34세(병역 최대 6년 차감) + 대표자·최대주주",
-      fact: `${company.ceo || "대표자"} ${largest ? `${largest.pct}% ${ceoIsLargest ? "최대주주" : "(최대주주 아님)"}` : ""}${opt.ceoAge ? ` · 창업 당시 ${opt.ceoAge}세` : " · 연령 미확인"}`,
-      status: youth === true && ceoIsLargest !== false ? "충족" : youth === false ? "미충족" : "확인 필요" },
+    { item: "청년 (100%)", rule: "창업 당시 15~34세(병역 최대 6년 차감) + 대표자·최대주주", fact: fz.fact, status: fz.status },
   ];
 
   // ---------- 판단 ----------
   const anyGap = rows.some((r) => r.inPeriod && r.calc > 0 && r.existing < r.A * 0.9);
-  const startupBlocked = !isSME || overcrowded === true && youth !== true || relatedStatus === "succession";
+  const startupBlocked = !isSME || overcrowded === true && !youthEligible || relatedStatus === "succession";
   let verdict, verdictLevel;
   if (rows.every((r) => r.calc <= 0)) { verdict = "실익 없음 (과세표준 없음)"; verdictLevel = "low"; }
   else if (startupBlocked) { verdict = scen.C.net > 0 ? "창업감면 어려움 — 중소기업특별세액감면 대안 검토" : "경정청구 실익 낮음"; verdictLevel = scen.C.net > 0 ? "mid" : "low"; }
   else if (anyGap && (checks[4].status.startsWith("확인") || checks[1].status === "확인 필요")) { verdict = "경정청구 가능성 높음 (조건부)"; verdictLevel = "high"; }
   else if (anyGap) { verdict = "경정청구 가능성 높음"; verdictLevel = "high"; }
   else { verdict = "이미 감면 적용 추정 — 신고서 확인 필요"; verdictLevel = "mid"; }
-  const primary = youth === true && !startupBlocked ? "B" : startupBlocked ? "C" : "A";
+  const primary = youthEligible && !startupBlocked ? "B" : startupBlocked ? "C" : "A";
 
   // ---------- 리스크 ----------
   const last = years.length - 1;
@@ -182,7 +242,7 @@ export function analyze(data, opt = {}) {
   ];
 
   return {
-    region: { ...region, overcrowded }, size, isSME, isMfg, youth, ceoIsLargest, sameIndustryRelated, foundedYear,
+    region: { ...region, overcrowded }, size, isSME, isMfg, youth, youthEligible, ceoIsLargest, founder, founderShare, largest, ageInfo, sameIndustryRelated, foundedYear,
     rates: { A: rateA, B: rateB, C: rateC }, rows, scen, checks, verdict, verdictLevel, primary, risks, others,
     generatedAt: new Date().toISOString(),
   };

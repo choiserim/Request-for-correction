@@ -26,6 +26,24 @@ function readSheets(XLSX, data) {
 /** 빈 칸을 제거한 문자열 행 */
 const compact = (row) => row.map(clean).filter((v) => v !== "");
 
+/**
+ * 지분율 검증·보정
+ * - 지분율이 100%를 넘거나 합계가 100.5%를 넘으면(주식수를 지분율로 오인한 경우) 주식수로 재계산
+ * - 지분율이 비어 있으면 요약표(“39.02%”) 값으로 보완, 주주표가 없으면 요약표로 대체
+ */
+export function normalizeShareholders(list, summaryPct = {}) {
+  let out = list.map((x) => ({ ...x }));
+  const sumPct = out.reduce((a, x) => a + (x.pct || 0), 0);
+  const totalShares = out.reduce((a, x) => a + (x.shares || 0), 0);
+  if (out.some((x) => x.pct > 100) || sumPct > 100.5) {
+    out.forEach((x) => { x.pct = totalShares && x.shares ? Math.round((x.shares / totalShares) * 10000) / 100 : null; x.pctSource = "주식수 환산"; });
+    if (out.every((x) => x.pct == null)) out.forEach((x) => { x.pct = summaryPct[x.name] ?? null; x.pctSource = "요약표"; });
+  }
+  out.forEach((x) => { if (x.pct == null && summaryPct[x.name] != null) { x.pct = summaryPct[x.name]; x.pctSource = "요약표"; } });
+  if (!out.length) out = Object.entries(summaryPct).map(([name, pct]) => ({ name, pct, pctSource: "요약표" }));
+  return out;
+}
+
 export function parseKodata(XLSX, arrayBuffer) {
   const sheets = readSheets(XLSX, arrayBuffer);
   const flat = []; // 전체 행 (compact)
@@ -66,30 +84,109 @@ export function parseKodata(XLSX, arrayBuffer) {
   const ci = flat.findIndex((r) => r[0] === "벤처" && r.includes("이노비즈"));
   if (ci >= 0 && flat[ci + 1]) flat[ci].forEach((k, i) => (certs[k] = flat[ci + 1][i] || ""));
 
-  // ---------- 3. 주주 / 관계회사 / 거래처 ----------
-  const section = (startTest, stopTest) => {
-    const out = []; let on = false;
-    for (const r of flat) {
-      if (!on && startTest(r)) { on = true; continue; }
-      if (on) { if (stopTest(r)) break; out.push(r); }
+  // ---------- 3. 주주 / 관계회사 / 거래처 — 머리글 열 위치 기반 ----------
+  // KoDATA 엑셀은 파일마다 병합 셀 위치가 달라, '행에서 처음 나온 숫자'를 쓰면
+  // 소유주식수(예: 90,000주)를 지분율로 오인합니다. 머리글 열에 각 셀을 매핑해 읽습니다.
+  const readTable = (headerTest, stopTest) => {
+    for (const s of sheets) {
+      for (let r = 0; r < s.rows.length; r++) {
+        const head = s.rows[r].map((v, i) => ({ i, label: clean(v) })).filter((c) => c.label);
+        if (!head.length || !headerTest(head.map((c) => c.label))) continue;
+        const out = [];
+        for (let k = r + 1; k < s.rows.length; k++) {
+          const cells = s.rows[k].map((v, i) => ({ i, v: clean(v) })).filter((c) => c.v);
+          if (!cells.length) continue;
+          if (stopTest(cells[0].v, cells)) break;
+          const rec = {};
+          for (const c of cells) {
+            // 셀 위치 이하에서 가장 가까운 머리글 열에 배정
+            const col = head.filter((h) => h.i <= c.i).pop() || head[0];
+            (rec[col.label] = rec[col.label] || []).push(c.v);
+          }
+          out.push(rec);
+        }
+        return out;
+      }
     }
-    return out;
+    return [];
   };
-  const stopCommon = (r) => /COPYRIGHT/.test(r[0]) || /현황$/.test(r[0]) && r.length <= 4 && !/^\d/.test(r[1] || "");
+  const first = (rec, label) => (rec[label] || [])[0] || "";
+  const lastNum = (rec, label) => { const arr = (rec[label] || []).map(toNum).filter((n) => n !== null); return arr.length ? arr[arr.length - 1] : null; };
+  const isStop = (v) => /COPYRIGHT|현황$|^매출구성$/.test(v);
 
-  const shareholders = section((r) => r[0] === "주주명", (r) => r[0] === "관계회사현황" || /COPYRIGHT/.test(r[0]))
-    .filter((r) => r[0] !== "보통주" && r.length >= 2)
-    .map((r) => ({ name: r[0], pct: toNum(r.find((v) => /^\d+(\.\d+)?$/.test(v))) ?? null, relation: r[r.length - 1] }))
-    .filter((s) => s.name && s.name !== "기타");
+  let shareholders = readTable(
+    (h) => h[0] === "주주명" && h.includes("지분율"),
+    (v) => isStop(v),
+  ).filter((rec) => !rec["주주명"] || first(rec, "주주명") !== "보통주")
+    .map((rec) => ({
+      name: first(rec, "주주명"),
+      type: first(rec, "구분"),                       // 최대주주 / 최대주주의특수관계인 …
+      shares: lastNum(rec, "소유주식수"),               // 합계 열(마지막 숫자)
+      pct: lastNum(rec, "지분율"),                      // 합계 열(마지막 숫자)
+      relation: first(rec, "경영실권자와의 관계"),       // 본인 / 가족 / 타인
+      role: first(rec, "회사와의 관계"),                // 실제경영자 / 대표이사 / 임원 …
+    }))
+    .filter((x) => x.name && x.name !== "보통주" && x.name !== "기타");
 
-  const related = section((r) => r[0] === "기업명" && r.includes("관계내용"), stopCommon)
-    .map((r) => ({ name: r[0], business: r[1] || "", relation: r[2] || "" }));
+  const summaryPct = {};
+  const si = flat.findIndex((r) => r[0] === "주요 주주");
+  if (si >= 0) for (let k = si + 1; k < Math.min(si + 6, flat.length); k++) {
+    const r = flat[k];
+    if (r[1] && /%$/.test(r[1])) summaryPct[r[0]] = toNum(r[1].replace("%", ""));
+  }
+  shareholders = normalizeShareholders(shareholders, summaryPct);
 
-  const parseParties = (title) => section((r) => r[0] === title, (r) => /COPYRIGHT/.test(r[0]) || r[0] === "판매처현황" || r[0] === "매출구성")
-    .filter((r) => r[0] !== "기업명")
-    .map((r) => ({ name: r[0], bizNo: /^\d{3}-\d{2}-\d{5}$/.test(r[1]) ? r[1] : "", share: toNum(r.find((v, i) => i >= 2 && /^\d+(\.\d+)?$/.test(v))) }));
+  const related = readTable((h) => h[0] === "기업명" && h.includes("관계내용"), (v) => isStop(v))
+    .map((rec) => ({ name: first(rec, "기업명"), business: first(rec, "사업내용"), relation: first(rec, "관계내용") }))
+    .filter((x) => x.name);
+
+  const parseParties = (title) => {
+    // 제목('구매처현황'/'판매처현황') 뒤에 처음 나오는 '기업명 … 거래비중' 머리글을 열 위치로 읽음
+    let on = false;
+    return readTable((h) => {
+      if (h[0] === title) on = true;
+      return on && h[0] === "기업명" && h.includes("거래비중");
+    }, (v) => isStop(v) || v === "판매처현황")
+      .map((rec) => ({ name: first(rec, "기업명"), bizNo: /^\d{3}-\d{2}-\d{5}$/.test(first(rec, "사업자번호")) ? first(rec, "사업자번호") : "", ceo: first(rec, "대표자명"), share: lastNum(rec, "거래비중") ?? toNum((rec["기업명"] || [])[1]) }))
+      .filter((x) => x.name);
+  };
   const purchasers = parseParties("구매처현황");
   const customers = parseParties("판매처현황");
+
+  // ---------- 3-2. 인물(생년)·연혁(창업 당시 대표자) ----------
+  const people = [];
+  const addPerson = (p) => {
+    if (!p.name) return;
+    const ex = people.find((q) => q.name === p.name);
+    if (ex) { if (!ex.birthDate && p.birthDate) ex.birthDate = p.birthDate; if (!ex.birthYear && p.birthYear) ex.birthYear = p.birthYear; if (!ex.role && p.role) ex.role = p.role; ex.sources.push(p.source); }
+    else people.push({ ...p, sources: [p.source] });
+  };
+  // 인적사항: "성명 / 직위 | 최순덕/대표이사 | 생년월일 / 성별 | 1960-11-22 / 여성"
+  flat.filter((r) => r[0] === "성명 / 직위").forEach((r) => {
+    const [nm, pos] = (r[1] || "").split("/").map((v) => v.trim());
+    const bi = r.indexOf("생년월일 / 성별");
+    const bd = bi >= 0 ? /(\d{4})-(\d{2})-(\d{2})/.exec(r[bi + 1] || "") : null;
+    if (nm && !/생년월일/.test(nm)) addPerson({ name: nm, role: pos || "", birthDate: bd ? bd[0] : "", birthYear: bd ? Number(bd[1]) : null, source: "인적사항" });
+  });
+  // 종합의견 문장: "대표이사 최순덕(1960년생, 여)", "실제경영자 이상붕(1958년생, 남)"
+  flat.forEach((r) => r.forEach((cell) => {
+    const re = /(대표이사|실제경영자|대표자)\s*([가-힣]{2,5})\s*\((\d{4})년생/g; let m;
+    while ((m = re.exec(cell))) addPerson({ name: m[2], role: m[1], birthDate: "", birthYear: Number(m[3]), source: "종합의견" });
+  }));
+  // 경영진현황: 실제경영자 표시
+  readTable((h) => h[0] === "구분" && h.includes("성명") && h.includes("직위"), (v) => isStop(v) || v === "주요주주현황")
+    .forEach((rec) => { if (/실제경영자/.test(first(rec, "구분"))) { const nm = first(rec, "성명"); const ex = people.find((q) => q.name === nm); if (ex) ex.actualManager = true; else addPerson({ name: nm, role: "실제경영자", birthYear: null, birthDate: "", source: "경영진현황", actualManager: true }); } });
+
+  // 연혁: 설립 기록에서 창업 당시 대표자, 대표 변경 기록
+  const history = [];
+  const hi = flat.findIndex((r) => r[0] === "연혁일자");
+  if (hi >= 0) for (let k = hi + 1; k < flat.length && !/COPYRIGHT/.test(flat[k][0]); k++) {
+    if (/^\d{4}-\d{2}-\d{2}$/.test(flat[k][0])) history.push({ date: flat[k][0], text: flat[k].slice(1).join(" ") });
+  }
+  const est = history.find((h) => /설립/.test(h.text));
+  const founderName = est ? ((/대표자\s*:\s*([가-힣]{2,5})/.exec(est.text) || /대표이사\s*([가-힣]{2,5})에\s*의해/.exec(est.text) || [])[1] || "") : "";
+  const foundingAddress = est ? ((/주소\s*:\s*([^\],]+)/.exec(est.text) || /에\s*의해\s*(.+?)\s*소재/.exec(est.text) || [])[1] || "").trim() : "";
+  const ceoChanges = history.filter((h) => /대표이사.*(취임|변경)|대표자.*변경/.test(h.text));
 
   // ---------- 4. 재무제표 (천원) — 열 위치 기반 ----------
   const statements = {}; // { 손익계산서: { years:[], rows:{label:[..]} } }
@@ -150,5 +247,7 @@ export function parseKodata(XLSX, arrayBuffer) {
   };
   fin.laborTotal = fin.sgaSalary.map((v, i) => v + (fin.mfgLabor[i] || 0));
 
-  return { company, certs, shareholders, related, purchasers, customers, fin, statements, sheetCount: sheets.length };
+  company.founderName = founderName || company.ceo;
+  company.foundingAddress = foundingAddress;
+  return { company, certs, shareholders, related, purchasers, customers, people, history, ceoChanges, fin, statements, sheetCount: sheets.length };
 }

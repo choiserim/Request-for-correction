@@ -14,7 +14,7 @@ export function buildSections(data, a) {
   const { company: c, fin } = data;
   const y = fin.years;
   const prim = a.scen[a.primary];
-  const sh = data.shareholders.map((s) => `${s.name} ${s.pct ?? "-"}%`).join(", ");
+  const sh = data.shareholders.map((s) => `${s.name} ${s.pct == null ? "-" : Math.round(s.pct * 100) / 100 + "%"}`).join(", ");
   const rel = data.related.length ? data.related.map((r) => `${r.name} (${r.business}, ${r.relation})`).join("; ") : "없음";
   const certs = Object.entries(data.certs).map(([k, v]) => `${k} ${v}`).join(", ") || "-";
   const row = (label, arr, f = m) => `| ${label} | ${arr.map(f).join(" | ")} |`;
@@ -43,6 +43,7 @@ export function buildSections(data, a) {
     `| 소재지 | ${c.address} |`,
     `| 규모 | ${c.size} · 종업원 ${c.employees ?? "-"}명 |`,
     `| 주주 | ${sh || "-"} |`,
+    `| 창업 당시 대표 | ${a.founder || c.ceo}${a.founder && a.founder !== c.ceo ? ` (현 대표 ${c.ceo})` : ""}${a.ageInfo ? ` · 창업 당시 만 ${a.ageInfo.exact ? a.ageInfo.min : `${a.ageInfo.min}~${a.ageInfo.max}`}세` : ""} |`,
     `| 주 판매처 | ${data.customers.slice(0, 2).map((x) => `${x.name} ${x.share ?? "-"}%`).join(", ") || "-"} |`,
     `| 관계회사 | ${rel} |`,
     `| 기업인증 | ${certs} |`,

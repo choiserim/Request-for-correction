@@ -140,9 +140,9 @@ export async function buildPptx(state, PptxGenJS = window.PptxGenJS) {
     const s = pres.addSlide({ masterName: "CONTENT" });
     title(s, "창업중소기업 세액감면 요건 점검", "조세특례제한법 제6조 · 시행령 제5조");
     const rows = [hdr(["요건", "법령 기준", "현황", "판단"]), ...a.checks.map((k) => [
-      k.item, cut(k.rule, 40), cut(k.fact, 40), { text: k.status, options: { bold: true, color: statusColor(k.status), align: "center" } },
+      k.item, cut(k.rule, 45), cut(k.fact, 80), { text: k.status, options: { bold: true, color: statusColor(k.status), align: "center" } },
     ])];
-    s.addTable(rows, tblOpt({ x: 0.6, y: 1.8, w: 12.13, colW: [1.8, 4.2, 4.2, 1.93], rowH: 0.62, fontSize: 13 }));
+    s.addTable(rows, tblOpt({ x: 0.6, y: 1.8, w: 12.13, colW: [1.6, 3.7, 4.83, 2.0], rowH: 0.66, fontSize: 12 }));
   }
 
   // 7. 시나리오
