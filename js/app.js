@@ -1,7 +1,7 @@
 import { parseKodata } from "./parser.js";
 import { analyze, fmtM, range } from "./taxengine.js";
 import { buildSections, renderHTML } from "./report.js";
-import { MODELS, streamClaude, SYSTEM_BASE, EDIT_FORMAT, buildContext, attachmentBlocks, extractSections } from "./claude.js";
+import { MODELS, streamClaude, checkProxy, SYSTEM_BASE, EDIT_FORMAT, buildContext, attachmentBlocks, extractSections } from "./claude.js";
 import { buildDocx } from "./export-docx.js";
 import { buildPptx } from "./export-pptx.js";
 
@@ -19,7 +19,8 @@ const state = {
   meta: { author: "", date: new Date().toISOString().slice(0, 10), sourceName: "" },
   chat: [], attachments: [], proposals: [],
 };
-const settings = { apiKey: "", remember: false, model: MODELS[0].id, maxTokens: 8000, proxyUrl: "" };
+// conn: "key"(개인 API 키로 직접 호출) | "proxy"(팀 프록시 + 팀 접속 코드)
+const settings = { conn: "key", apiKey: "", teamCode: "", remember: false, model: MODELS[0].id, maxTokens: 8000, proxyUrl: "" };
 
 // ---------------- 저장소 (localStorage는 실패해도 동작) ----------------
 const ls = {
@@ -29,13 +30,21 @@ const ls = {
 function loadSettings() {
   const s = ls.get(SETTINGS_KEY);
   if (s) Object.assign(settings, s);
-  try { const k = sessionStorage.getItem("gj-key"); if (k && !settings.apiKey) settings.apiKey = k; } catch { /* */ }
+  if (s && !s.conn) settings.conn = s.proxyUrl ? "proxy" : "key"; // 이전 버전 설정 호환
+  try {
+    const k = sessionStorage.getItem("gj-key"); if (k && !settings.apiKey) settings.apiKey = k;
+    const c = sessionStorage.getItem("gj-team"); if (c && !settings.teamCode) settings.teamCode = c;
+  } catch { /* */ }
 }
 function saveSettings() {
   const copy = { ...settings };
-  if (!settings.remember) { copy.apiKey = ""; try { sessionStorage.setItem("gj-key", settings.apiKey); } catch { /* */ } }
+  // 기억하지 않으면 키·코드는 이 탭(세션)에만 보관
+  if (!settings.remember) {
+    copy.apiKey = ""; copy.teamCode = "";
+    try { sessionStorage.setItem("gj-key", settings.apiKey); sessionStorage.setItem("gj-team", settings.teamCode); } catch { /* */ }
+  }
   ls.set(SETTINGS_KEY, copy);
-  $("#modelBadge").textContent = MODELS.find((m) => m.id === settings.model)?.id || settings.model;
+  $("#modelBadge").textContent = `${settings.model}${settings.conn === "proxy" ? " · 팀" : ""}`;
 }
 let saveTimer;
 function autosave() {
@@ -218,7 +227,9 @@ const PROMPTS = {
 let aborter = null;
 async function runAI(userText, { edit, sectionId } = {}) {
   if (!state.data) { toast("먼저 기업종합보고서 엑셀을 올려 주세요"); return; }
-  if (!settings.apiKey && !settings.proxyUrl) { openSettings(); toast("API 키를 입력해 주세요"); return; }
+  if (settings.conn === "proxy" ? !settings.proxyUrl : !settings.apiKey) {
+    openSettings(); toast(settings.conn === "proxy" ? "팀 프록시 주소와 접속 코드를 입력해 주세요" : "API 키를 입력해 주세요"); return;
+  }
   readInputs();
   const system = [SYSTEM_BASE, edit ? EDIT_FORMAT : "", sectionId ? `이번 요청은 섹션 id="${sectionId}"만 수정합니다.` : "", buildContext(state)].filter(Boolean).join("\n\n");
   const history = state.chat.slice(-10).map((m) => ({ role: m.role, content: m.content }));
@@ -234,7 +245,7 @@ async function runAI(userText, { edit, sectionId } = {}) {
   let raf = 0, latest = "";
   try {
     const res = await streamClaude({
-      apiKey: settings.apiKey, proxyUrl: settings.proxyUrl, model: settings.model, maxTokens: Number(settings.maxTokens) || 8000,
+      apiKey: settings.conn === "key" ? settings.apiKey : "", proxyUrl: settings.conn === "proxy" ? settings.proxyUrl : "", teamCode: settings.teamCode, model: settings.model, maxTokens: Number(settings.maxTokens) || 8000,
       system, messages, signal: aborter.signal,
       onText: (_, full) => { latest = full; if (!raf) raf = requestAnimationFrame(() => { raf = 0; bubble.innerHTML = renderBot(latest); scrollChat(); }); },
     });
@@ -320,11 +331,32 @@ async function exportPptx() {
 }
 
 // ---------------- 설정 ----------------
-function openSettings() {
+function showConn(mode) {
+  $$("input[name=conn]").forEach((r) => (r.checked = r.value === mode));
+  $("#connKey").hidden = mode !== "key"; $("#connProxy").hidden = mode !== "proxy";
+}
+function openSettings(statusMsg) {
   $("#setKey").value = settings.apiKey; $("#setRemember").checked = settings.remember;
   $("#setModel").innerHTML = MODELS.map((m) => `<option value="${m.id}">${m.label}</option>`).join("");
-  $("#setModel").value = settings.model; $("#setMaxTok").value = settings.maxTokens; $("#setProxy").value = settings.proxyUrl;
+  $("#setModel").value = settings.model; $("#setMaxTok").value = settings.maxTokens;
+  $("#setProxy").value = settings.proxyUrl; $("#setTeamCode").value = settings.teamCode;
+  showConn(settings.conn);
+  setStatus(typeof statusMsg === "string" ? statusMsg : "", "");
   $("#dlgSettings").showModal();
+}
+function setStatus(msg, kind) { const el = $("#setStatus"); el.textContent = msg; el.className = `small ${kind || "muted"}`; }
+
+/** 초대 링크(#proxy=...)로 들어온 경우 프록시 주소를 자동 입력 — 코드는 링크에 넣지 않음 */
+function importInviteLink() {
+  const m = /[#&]proxy=([^&]+)/.exec(location.hash || "");
+  if (!m) return;
+  try {
+    const url = decodeURIComponent(m[1]);
+    if (!/^https:\/\//.test(url)) return;
+    settings.conn = "proxy"; settings.proxyUrl = url; saveSettings();
+    history.replaceState(null, "", location.pathname + location.search);
+    openSettings("팀 프록시 주소가 입력되었습니다. 관리자에게 받은 접속 코드를 넣고 '연결 확인' 후 저장하세요.");
+  } catch { /* */ }
 }
 
 // ---------------- 이벤트 ----------------
@@ -392,16 +424,34 @@ function bind() {
 
   // 설정
   $("#btnSettings").addEventListener("click", openSettings);
+  $$("input[name=conn]").forEach((r) => r.addEventListener("change", () => showConn(r.value)));
+  $("#setCheck").addEventListener("click", async () => {
+    const url = $("#setProxy").value.trim();
+    if (!/^https:\/\//.test(url)) { setStatus("https:// 로 시작하는 프록시 주소를 입력하세요.", "bad"); return; }
+    setStatus("확인 중…", "");
+    const r = await checkProxy(url, $("#setTeamCode").value.trim());
+    setStatus(r.message, r.ok ? (r.codeRequired ? "ok" : "bad") : "bad");
+  });
+  $("#setInvite").addEventListener("click", async () => {
+    const url = $("#setProxy").value.trim();
+    if (!/^https:\/\//.test(url)) { setStatus("먼저 프록시 주소를 입력하세요.", "bad"); return; }
+    const link = `${location.origin}${location.pathname}#proxy=${encodeURIComponent(url)}`;
+    try { await navigator.clipboard.writeText(link); setStatus("초대 링크를 복사했습니다. 접속 코드는 팀원별로 따로 전달하세요.", "ok"); }
+    catch { window.prompt("아래 링크를 복사해 팀원에게 보내세요 (접속 코드는 따로 전달)", link); }
+  });
   $("#setSave").addEventListener("click", () => {
-    settings.apiKey = $("#setKey").value.trim(); settings.remember = $("#setRemember").checked;
+    settings.conn = $("input[name=conn]:checked")?.value || "key";
+    settings.apiKey = $("#setKey").value.trim(); settings.teamCode = $("#setTeamCode").value.trim();
+    settings.remember = $("#setRemember").checked;
     settings.model = $("#setModel").value; settings.maxTokens = Number($("#setMaxTok").value) || 8000; settings.proxyUrl = $("#setProxy").value.trim();
-    saveSettings(); toast("설정을 저장했습니다");
+    saveSettings(); toast(settings.conn === "proxy" ? "팀 프록시로 연결하도록 저장했습니다" : "설정을 저장했습니다");
   });
 }
 const confirmDel = (t) => window.confirm(`'${t}' 섹션을 삭제할까요?`);
 
 // ---------------- 시작 ----------------
-loadSettings(); saveSettings(); bind();
+loadSettings(); saveSettings(); bind(); importInviteLink();
+window.addEventListener("hashchange", importInviteLink); // 이미 열린 탭에서 초대 링크를 눌러도 반영
 const saved = ls.get(STORE_KEY);
 if (saved && restore(saved)) toast("이전 작업을 불러왔습니다");
 

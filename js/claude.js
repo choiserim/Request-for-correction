@@ -13,6 +13,7 @@ const API_URL = "https://api.anthropic.com/v1/messages";
  * @param {object} p
  * @param {string} p.apiKey     - 사용자 API 키 (프록시 사용 시 비워둠)
  * @param {string} p.proxyUrl   - 선택: 키를 숨기는 프록시(worker/proxy.js) 주소
+ * @param {string} p.teamCode   - 프록시 사용 시 팀 접속 코드
  * @param {string} p.model
  * @param {string} p.system
  * @param {Array}  p.messages   - [{role, content}]
@@ -21,10 +22,12 @@ const API_URL = "https://api.anthropic.com/v1/messages";
  * @param {AbortSignal} p.signal
  * @returns {Promise<{text:string, usage:object, stopReason:string}>}
  */
-export async function streamClaude({ apiKey, proxyUrl, model, system, messages, maxTokens = 8000, onText, signal }) {
+export async function streamClaude({ apiKey, proxyUrl, teamCode, model, system, messages, maxTokens = 8000, onText, signal }) {
   const url = proxyUrl ? proxyUrl.replace(/\/$/, "") + "/v1/messages" : API_URL;
   const headers = { "content-type": "application/json", "anthropic-version": "2023-06-01" };
-  if (!proxyUrl) {
+  if (proxyUrl) {
+    if (teamCode) headers["x-team-code"] = teamCode;
+  } else {
     if (!apiKey) throw new Error("API 키를 입력하세요 (설정 ⚙).");
     headers["x-api-key"] = apiKey;
     headers["anthropic-dangerous-direct-browser-access"] = "true"; // 브라우저 직접 호출(CORS) 허용 헤더
@@ -36,7 +39,8 @@ export async function streamClaude({ apiKey, proxyUrl, model, system, messages, 
   if (!res.ok) {
     let msg = `${res.status} ${res.statusText}`;
     try { const j = await res.json(); msg = j.error?.message || msg; } catch { /* ignore */ }
-    if (res.status === 401) msg = "API 키가 올바르지 않습니다. (" + msg + ")";
+    if (res.status === 401) msg = proxyUrl ? "팀 접속 코드가 올바르지 않습니다. 설정 ⚙에서 코드를 확인하세요." : "API 키가 올바르지 않습니다. (" + msg + ")";
+    if (res.status === 403 && proxyUrl) msg = "이 사이트 주소는 프록시에서 허용되지 않았습니다 (ALLOWED_ORIGIN 확인).";
     if (res.status === 429) msg = "요청 한도 초과 — 잠시 후 다시 시도하세요. (" + msg + ")";
     if (res.status === 529) msg = "API 서버 과부하 — 잠시 후 다시 시도하세요.";
     throw new Error(msg);
@@ -64,6 +68,21 @@ export async function streamClaude({ apiKey, proxyUrl, model, system, messages, 
     }
   }
   return { text: full, usage, stopReason };
+}
+
+/** 프록시 연결·팀 접속 코드 확인 (Anthropic API를 호출하지 않으므로 비용 없음) */
+export async function checkProxy(proxyUrl, teamCode) {
+  const url = proxyUrl.replace(/\/$/, "") + "/v1/check";
+  let res;
+  try { res = await fetch(url, { headers: teamCode ? { "x-team-code": teamCode } : {} }); }
+  catch { return { ok: false, message: "프록시에 연결할 수 없습니다. 주소를 확인하세요." }; }
+  let body = {}; try { body = await res.json(); } catch { /* */ }
+  if (res.status === 401) return { ok: false, message: "팀 접속 코드가 올바르지 않습니다." };
+  if (res.status === 403) return { ok: false, message: "이 사이트 주소가 프록시에서 허용되지 않았습니다 (ALLOWED_ORIGIN)." };
+  if (!res.ok) return { ok: false, message: body.error?.message || `프록시 오류 (${res.status})` };
+  if (!body.keyConfigured) return { ok: false, message: "프록시에 ANTHROPIC_API_KEY가 설정되지 않았습니다." };
+  return { ok: true, member: body.member, codeRequired: body.codeRequired,
+    message: body.codeRequired ? `연결됨 — ${body.member || "팀원"} 님으로 인증되었습니다.` : "연결됨 — 단, 프록시에 TEAM_CODES가 없어 누구나 사용할 수 있는 상태입니다." };
 }
 
 // ---------------- 프롬프트 ----------------
