@@ -1,0 +1,11 @@
+{
+  "name": "gyeongjeong-ai-review",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "기업종합보고서 기반 법인세 경정청구 사전검토 + Claude 실시간 검토 웹앱",
+  "scripts": {
+    "start": "npx --yes http-server -p 8080 -c-1 .",
+    "test": "node --test"
+  }
+}

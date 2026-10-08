@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>경정청구 AI 검토</title>
+  <meta name="description" content="기업종합보고서(엑셀)를 올리면 경정청구 가능 여부를 계산하고, Claude가 실시간으로 검토·보완해 Word 보고서와 PPT를 만들어 주는 브라우저 도구" />
+  <link rel="preconnect" href="https://cdn.jsdelivr.net" />
+  <link rel="stylesheet" href="css/style.css" />
+  <!-- 외부 라이브러리 (버전 고정) -->
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/docx@8.5.0/build/index.umd.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/pptxgenjs@3.12.0/dist/pptxgen.bundle.js"></script>
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <span class="logo">₩</span>
+      <div>
+        <h1>경정청구 AI 검토</h1>
+        <p id="subtitle">기업종합보고서 엑셀을 올려 시작하세요</p>
+      </div>
+    </div>
+    <div class="top-actions">
+      <span id="saveState" class="muted small"></span>
+      <button id="btnSettings" class="ghost" title="설정">⚙ 설정</button>
+    </div>
+  </header>
+
+  <div class="layout">
+    <!-- ============ 왼쪽: 입력 ============ -->
+    <aside class="side">
+      <section class="panel">
+        <h2>1. 기업 자료</h2>
+        <label id="drop" class="drop">
+          <input id="fileXls" type="file" accept=".xls,.xlsx" hidden />
+          <strong>기업종합보고서 (.xls/.xlsx)</strong>
+          <span class="muted small">끌어다 놓거나 클릭해서 선택</span>
+          <span id="fileName" class="small"></span>
+        </label>
+        <label class="drop slim">
+          <input id="fileAttach" type="file" accept=".pdf,.png,.jpg,.jpeg" multiple hidden />
+          <strong>추가 근거자료 (선택)</strong>
+          <span class="muted small">법인세 신고서·세무조정계산서 PDF 등 — AI 검토 시 함께 전달</span>
+        </label>
+        <ul id="attachList" class="attach"></ul>
+      </section>
+
+      <section class="panel" id="inputsPanel" hidden>
+        <h2>2. 보완 입력 <span class="muted small">입력 즉시 재계산</span></h2>
+        <div class="grid2">
+          <label>대표자 창업 당시 나이<input id="inCeoAge" type="number" min="15" max="99" placeholder="예: 33" /></label>
+          <label>청년창업 여부
+            <select id="inYouth"><option value="unknown">미확인</option><option value="yes">해당</option><option value="no">비해당</option></select></label>
+          <label>관계회사 승계 여부
+            <select id="inRelated"><option value="unknown">미확인</option><option value="independent">독립 창업 (소명 가능)</option><option value="succession">승계·확장 해당</option></select></label>
+          <label>과밀억제권역
+            <select id="inOver"><option value="auto">주소로 자동 판정</option><option value="out">권역 외</option><option value="in">권역 내</option></select></label>
+          <label>기업 규모
+            <select id="inSize"><option value="auto">자동</option><option value="소기업">소기업</option><option value="중기업">중기업</option></select></label>
+          <label>작성자 표기<input id="inAuthor" type="text" placeholder="예: 홍길동 컨설턴트" /></label>
+        </div>
+        <details>
+          <summary>신고서 값으로 덮어쓰기 (천원)</summary>
+          <p class="muted small">세무조정계산서의 과세표준·기적용 공제감면액을 넣으면 추정치 대신 사용합니다.</p>
+          <div id="yearInputs"></div>
+        </details>
+      </section>
+
+      <section class="panel" id="exportPanel" hidden>
+        <h2>3. 내보내기</h2>
+        <div class="btns">
+          <button id="btnDocx" class="primary">Word 보고서</button>
+          <button id="btnPptx" class="primary">미팅 PPT</button>
+        </div>
+        <div class="btns">
+          <button id="btnSave" class="ghost">프로젝트 저장(.json)</button>
+          <label class="ghost btnlike">불러오기<input id="fileProject" type="file" accept=".json" hidden /></label>
+        </div>
+      </section>
+      <p class="muted small foot">파일은 브라우저 안에서만 처리됩니다. AI 검토를 실행할 때에만 데이터가 Claude API로 전송됩니다.</p>
+    </aside>
+
+    <!-- ============ 가운데: 결과 ============ -->
+    <main class="main">
+      <nav class="tabs">
+        <button data-tab="dash" class="active">대시보드</button>
+        <button data-tab="report">보고서 편집</button>
+      </nav>
+      <div id="empty" class="empty">
+        <div>
+          <h2>기업종합보고서를 올려 주세요</h2>
+          <p class="muted">한국평가데이터(KoDATA) 기업종합보고서 엑셀을 읽어 창업중소기업 세액감면 등 경정청구 가능 여부를 계산하고,
+            오른쪽 AI 패널에서 Claude가 결과를 검토·보완합니다.</p>
+        </div>
+      </div>
+      <section id="tab-dash" class="tab" hidden></section>
+      <section id="tab-report" class="tab" hidden>
+        <div class="report-tools">
+          <button id="btnRegen" class="ghost small">계산값으로 수치 섹션 재생성</button>
+          <button id="btnAddSec" class="ghost small">+ 섹션 추가</button>
+          <span class="muted small">편집한 섹션은 ✎ 표시 — 재계산 시 덮어쓰지 않습니다</span>
+        </div>
+        <div id="sections"></div>
+      </section>
+    </main>
+
+    <!-- ============ 오른쪽: AI ============ -->
+    <aside class="ai">
+      <div class="ai-head">
+        <h2>Claude 검토</h2>
+        <span id="modelBadge" class="badge"></span>
+      </div>
+      <div class="quick">
+        <button data-ai="review">전체 검토</button>
+        <button data-ai="improve">보완·수정 반영</button>
+        <button data-ai="laws">법령·예규 점검</button>
+        <button data-ai="qa">미팅 예상 질문</button>
+      </div>
+      <div id="chat" class="chat">
+        <div class="msg sys">자료를 올린 뒤 위 버튼을 누르거나 아래에 요청을 입력하세요.<br />예) “결론을 더 보수적으로 바꿔줘”, “가지급금 리스크를 구체화해줘”</div>
+      </div>
+      <div id="proposals" class="proposals"></div>
+      <form id="chatForm" class="chat-form">
+        <textarea id="chatInput" rows="3" placeholder="Claude에게 요청하기 (Ctrl+Enter 전송)"></textarea>
+        <div class="chat-row">
+          <label class="small"><input id="editMode" type="checkbox" checked /> 보고서 수정안 받기</label>
+          <span id="usage" class="muted small"></span>
+          <button id="btnStop" type="button" class="ghost small" hidden>중지</button>
+          <button id="btnSend" type="submit" class="primary small">보내기</button>
+        </div>
+      </form>
+    </aside>
+  </div>
+
+  <!-- 설정 -->
+  <dialog id="dlgSettings">
+    <form method="dialog" class="settings">
+      <h2>설정</h2>
+      <label>Anthropic API 키
+        <input id="setKey" type="password" autocomplete="off" placeholder="sk-ant-..." /></label>
+      <label class="small"><input id="setRemember" type="checkbox" /> 이 브라우저에 키 저장 (개인 PC에서만 권장)</label>
+      <label>모델
+        <select id="setModel"></select></label>
+      <label>최대 출력 토큰
+        <input id="setMaxTok" type="number" min="1000" max="64000" step="1000" value="8000" /></label>
+      <label>프록시 URL (선택)
+        <input id="setProxy" type="url" placeholder="https://your-worker.workers.dev — 입력 시 API 키 없이 프록시로 호출" /></label>
+      <p class="muted small">API 키는 이 브라우저에서 Anthropic API로만 직접 전송됩니다. 여러 사람이 쓰는 경우 worker/proxy.js(키 보관용 프록시)를 배포해 주소를 넣으세요.</p>
+      <div class="btns end"><button value="cancel" class="ghost">닫기</button><button id="setSave" value="ok" class="primary">저장</button></div>
+    </form>
+  </dialog>
+
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>

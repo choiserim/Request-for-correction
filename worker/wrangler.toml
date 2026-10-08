@@ -1,0 +1,7 @@
+name = "gyeongjeong-claude-proxy"
+main = "proxy.js"
+compatibility_date = "2026-01-01"
+
+[vars]
+# 쉼표로 여러 개 지정 가능. 비워두면 모든 출처 허용(권장하지 않음)
+ALLOWED_ORIGIN = "https://YOUR-ID.github.io"
